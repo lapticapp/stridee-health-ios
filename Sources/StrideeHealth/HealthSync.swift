@@ -305,11 +305,13 @@ public final class HealthSync: ObservableObject {
         if configuration.dataTypes.contains(.workouts) {
             await collectWorkouts(configuration)
         }
-        if configuration.dataTypes.contains(.wellness) {
-            await collectWellness(configuration)
+        // What is already queued goes first: this sync's workouts, and whatever
+        // a sync the app did not live to finish left behind. Wellness is then
+        // read and sent a window at a time, on top of what was already sent.
+        var error = await drain(api)
+        if error == nil, configuration.dataTypes.contains(.wellness) {
+            error = await collectWellness(configuration, uploadingWith: api)
         }
-
-        let error = await drain(api)
         // Disconnected mid-sync: `disconnect` already reset the status.
         guard state.isConnected else { return error }
         if let error {
@@ -329,35 +331,46 @@ public final class HealthSync: ObservableObject {
         return error ?? scheduleError
     }
 
-    /// Queue every workout added since the anchor, then advance it. Safe to
-    /// advance before uploading: the queue is on disk.
-    private func collectWorkouts(_ configuration: Configuration) async {
-        let (workouts, anchor) = await fetchWorkouts(after: state.workoutAnchor)
-        let exporter = WorkoutExporter(store: store)
+    /// Workouts read from HealthKit per anchored query. The anchor moves once
+    /// each batch is queued, so a first sync over years of workouts that the
+    /// system kills resumes from the last batch, not from the first workout.
+    private static let workoutBatchSize = 50
 
-        for workout in workouts {
-            let source = workout.sourceRevision.source.bundleIdentifier
-            if configuration.excludedSourceBundleIDs.contains(source) { continue }
-            // Off the main actor: a long ride's route is a lot of JSON.
-            let exported = await Task.detached { await exporter.export(workout) }.value
-            guard let exported else {
-                log.error("could not serialise workout \(workout.uuid, privacy: .public)")
-                continue
+    /// Queue every workout added since the anchor, a batch at a time, advancing
+    /// the anchor after each. Safe to advance before uploading: the queue is on
+    /// disk.
+    private func collectWorkouts(_ configuration: Configuration) async {
+        let exporter = WorkoutExporter(store: store)
+        var found = false
+
+        while !Task.isCancelled {
+            let (workouts, anchor) = await fetchWorkouts(after: state.workoutAnchor, limit: Self.workoutBatchSize)
+            for workout in workouts {
+                let source = workout.sourceRevision.source.bundleIdentifier
+                if configuration.excludedSourceBundleIDs.contains(source) { continue }
+                // Off the main actor: a long ride's route is a lot of JSON.
+                let exported = await Task.detached { await exporter.export(workout) }.value
+                guard let exported else {
+                    log.error("could not serialise workout \(workout.uuid, privacy: .public)")
+                    continue
+                }
+                // Disconnected while this was exporting: write nothing, or a later
+                // connect would resume from an anchor that skips the history.
+                guard state.isConnected else { return }
+                queue.enqueue(exported.rawData, kind: .workout, key: exported.externalId)
             }
-            // Disconnected while this was exporting: write nothing, or a later
-            // connect would resume from an anchor that skips the history.
             guard state.isConnected else { return }
-            queue.enqueue(exported.rawData, kind: .workout, key: exported.externalId)
+            if let anchor { state.workoutAnchor = anchor }
+            if !workouts.isEmpty { found = true }
+            if workouts.count < Self.workoutBatchSize { break }
         }
-        guard state.isConnected else { return }
-        if let anchor { state.workoutAnchor = anchor }
-        if !workouts.isEmpty { recordDataFound(.workouts) }
+        if found { recordDataFound(.workouts) }
     }
 
-    private func fetchWorkouts(after anchor: HKQueryAnchor?) async -> ([HKWorkout], HKQueryAnchor?) {
+    private func fetchWorkouts(after anchor: HKQueryAnchor?, limit: Int) async -> ([HKWorkout], HKQueryAnchor?) {
         await withCheckedContinuation { continuation in
             let query = HKAnchoredObjectQuery(
-                type: HKObjectType.workoutType(), predicate: nil, anchor: anchor, limit: HKObjectQueryNoLimit
+                type: HKObjectType.workoutType(), predicate: nil, anchor: anchor, limit: limit
             ) { _, samples, _, newAnchor, _ in
                 let workouts = (samples as? [HKWorkout] ?? []).sorted { $0.startDate < $1.startDate }
                 continuation.resume(returning: (workouts, newAnchor))
@@ -369,15 +382,22 @@ public final class HealthSync: ObservableObject {
     /// Items per wellness upload. Well inside the API's 2,000 and 10 MB.
     private static let wellnessBatchSize = 500
 
-    /// Collect wellness from a little before where the last collection ended,
-    /// so the late-arriving tail of yesterday is re-sent.
-    ///
-    /// Skipped while a wellness batch is still waiting to upload: collecting
-    /// again would only queue a second copy of the same days. The window is
-    /// remembered, so the next collection after the queue drains covers the gap.
-    private func collectWellness(_ configuration: Configuration) async {
-        if queue.items().contains(where: { $0.kind == .wellness }) { return }
+    /// Days of wellness read from HealthKit at a time. A month of samples is
+    /// small; a year of them, read at once, is what filled the memory of phones
+    /// with a long history and got the app killed before it had sent anything.
+    private static let wellnessWindowDays = 30
 
+    /// Collect wellness from a little before where the last collection ended,
+    /// so the late-arriving tail of yesterday is re-sent, and upload it.
+    ///
+    /// A long range — the first sync's history — goes a window at a time: each
+    /// window is read and serialised off the main actor, queued, uploaded, and
+    /// only then recorded as collected. An app killed on the way resumes from
+    /// the last window it recorded, and a window that could not be uploaded is
+    /// kept on disk for the next sync, which drains it before reading more.
+    private func collectWellness(
+        _ configuration: Configuration, uploadingWith api: APIClient
+    ) async -> HealthSyncError? {
         let now = Date()
         let calendar = Calendar.current
         let start: Date
@@ -388,23 +408,35 @@ public final class HealthSync: ObservableObject {
         }
 
         let collector = WellnessCollector(store: store)
-        let items = await Task.detached { await collector.collect(from: start, to: now) }.value
-        // Disconnected while collecting: see `collectWorkouts`.
-        guard state.isConnected else { return }
-        if !items.isEmpty { recordDataFound(.wellness) }
-
-        var offset = 0
-        while offset < items.count {
-            let batch = Array(items[offset..<min(offset + Self.wellnessBatchSize, items.count)])
-            offset += Self.wellnessBatchSize
-            let envelope: [String: Any] = ["format": "healthkit.wellness.v1", "items": batch]
-            guard let body = try? JSONSerialization.data(withJSONObject: envelope) else {
+        let batchSize = Self.wellnessBatchSize
+        for window in SyncWindows.cut(from: start, to: now, days: Self.wellnessWindowDays, calendar: calendar) {
+            if Task.isCancelled { return nil }
+            let (found, bodies): (Bool, [Data]?) = await Task.detached {
+                let items = await collector.collect(from: window.start, to: window.end)
+                var bodies: [Data] = []
+                for batch in items.chunked(by: batchSize) {
+                    let envelope: [String: Any] = ["format": "healthkit.wellness.v1", "items": batch]
+                    guard let body = try? JSONSerialization.data(withJSONObject: envelope) else {
+                        return (!items.isEmpty, nil)
+                    }
+                    bodies.append(body)
+                }
+                return (!items.isEmpty, bodies)
+            }.value
+            // Disconnected while collecting: see `collectWorkouts`.
+            guard state.isConnected else { return nil }
+            guard let bodies else {
                 log.error("could not serialise a wellness batch")
-                return
+                return nil
             }
-            queue.enqueue(body, kind: .wellness, key: UUID().uuidString)
+            if found { recordDataFound(.wellness) }
+            for body in bodies {
+                queue.enqueue(body, kind: .wellness, key: UUID().uuidString)
+            }
+            state.wellnessCollectedThrough = window.end
+            if let error = await drain(api) { return error }
         }
-        state.wellnessCollectedThrough = now
+        return nil
     }
 
     private func recordDataFound(_ type: DataType) {

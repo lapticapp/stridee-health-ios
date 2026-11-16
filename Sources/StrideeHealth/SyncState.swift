@@ -32,7 +32,9 @@ struct SyncState {
     }
 
     /// Wellness has been collected up to here. The next sync re-collects from a
-    /// couple of days before it, because a watch writes yesterday late.
+    /// couple of days before it, because a watch writes yesterday late. Moves
+    /// window by window through a long collection, so an app killed on the way
+    /// resumes from the last window it sent.
     var wellnessCollectedThrough: Date? {
         get { date("wellnessCollectedThrough") }
         nonmutating set { setDate(newValue, "wellnessCollectedThrough") }
@@ -59,8 +61,8 @@ struct SyncState {
         }
     }
 
-    /// The workout `HKQueryAnchor`, archived. Advanced only once every workout
-    /// it covers is in the upload queue.
+    /// The workout `HKQueryAnchor`, archived. Advanced batch by batch, each time
+    /// every workout the batch covers is in the upload queue.
     var workoutAnchor: HKQueryAnchor? {
         get {
             guard let data = defaults.data(forKey: key("workoutAnchor")) else { return nil }

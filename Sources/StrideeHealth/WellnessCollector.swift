@@ -158,9 +158,12 @@ struct WellnessCollector {
 
     private func sleepItems(from dayStart: Date, to end: Date) async -> [Item] {
         guard let type = HKCategoryType.categoryType(forIdentifier: .sleepAnalysis) else { return [] }
-        // From the evening before the window, so the first night is whole.
+        // From the evening before the window, so the first night is whole, and
+        // past its end so the last one is too: a window that stops at a midnight
+        // would otherwise send half a night, then the whole of it from the next.
         let from = calendar.date(byAdding: .hour, value: -12, to: dayStart) ?? dayStart
-        let samples: [HKCategorySample] = await self.samples(type, from: from, to: end)
+        let to = calendar.date(byAdding: .hour, value: 12, to: end) ?? end
+        let samples: [HKCategorySample] = await self.samples(type, from: from, to: to)
             .compactMap { $0 as? HKCategorySample }
             .sorted { $0.startDate < $1.startDate }
 

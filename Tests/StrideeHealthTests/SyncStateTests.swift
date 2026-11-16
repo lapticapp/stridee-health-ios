@@ -16,16 +16,28 @@ final class SyncStateTests: XCTestCase {
         XCTAssertNil(state.lastDataFound[.wellness])
     }
 
+    func testWellnessCollectedThroughRoundTrips() {
+        let state = makeState()
+        XCTAssertNil(state.wellnessCollectedThrough)
+
+        let edge = Date(timeIntervalSince1970: 1_790_000_000)
+        state.wellnessCollectedThrough = edge
+
+        XCTAssertEqual(state.wellnessCollectedThrough, edge)
+    }
+
     func testResetForgetsEverythingAboutTheConnection() {
         let state = makeState()
         state.isConnected = true
         state.lastSyncDate = Date()
+        state.wellnessCollectedThrough = Date()
         state.lastDataFound = [.wellness: Date()]
 
         state.reset()
 
         XCTAssertFalse(state.isConnected)
         XCTAssertNil(state.lastSyncDate)
+        XCTAssertNil(state.wellnessCollectedThrough)
         XCTAssertTrue(state.lastDataFound.isEmpty)
     }
 }

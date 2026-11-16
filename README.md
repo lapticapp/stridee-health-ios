@@ -144,6 +144,10 @@ nothing found usually means the switches are off. Show `openSettings()`.
 - **Nothing is lost.** Uploads are written to disk before they are sent and retried on
   the next sync. A failing token route, no network, or the app being killed all just
   delay them.
+- **A long first sync goes in pieces.** Workouts are read fifty at a time and wellness a
+  month at a time; each piece is queued, sent and recorded before the next is read. An
+  app killed on the way resumes from the last piece, and a year of samples is never in
+  memory at once.
 - **Workouts are sent once.** Each is keyed by its HealthKit UUID, on the phone and on
   the server.
 - **Wellness is re-sent on purpose.** Every sync re-collects the last couple of days,
