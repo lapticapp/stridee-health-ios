@@ -154,6 +154,17 @@ struct SyncState {
         nonmutating set { defaults.set(newValue, forKey: key("declaredScheduling")) }
     }
 
+    /// See ``HealthSync/readWorkouts(startingFrom:)``. An earlier start drops
+    /// the anchor: HealthKit's anchor never hands back a workout it already
+    /// passed, so the workouts between the two dates are read again from the
+    /// start of the store, the predicate keeping it to them.
+    func readWorkouts(startingFrom date: Date) {
+        guard workoutsSince != date else { return }
+        let narrowing = workoutsSince.map { date > $0 } ?? false
+        workoutsSince = date
+        if !narrowing { workoutAnchor = nil }
+    }
+
     /// See ``HealthSync/ignoreWellness(writtenBy:)``. An app taken off the
     /// list makes the next sync read the wellness history again.
     func ignoreWellness(writtenBy bundleIdentifiers: Set<String>) {

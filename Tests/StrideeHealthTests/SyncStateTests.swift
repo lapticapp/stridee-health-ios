@@ -1,3 +1,4 @@
+import HealthKit
 import XCTest
 @testable import StrideeHealth
 
@@ -78,5 +79,31 @@ final class SyncStateTests: XCTestCase {
         state.ignoreWellness(writtenBy: ["com.whoop.iphone"])
         state.reset()
         XCTAssertEqual(state.ignoredWellnessSources, ["com.whoop.iphone"])
+    }
+
+    func testWorkoutsFromAnEarlierDateAreReadAgainFromThere() {
+        let state = makeState()
+        let update = Date(timeIntervalSince1970: 1_795_000_000)
+        let connection = Date(timeIntervalSince1970: 1_794_000_000)
+        state.workoutsSince = update
+        state.workoutAnchor = HKQueryAnchor(fromValue: 42)
+
+        state.readWorkouts(startingFrom: connection)
+
+        XCTAssertEqual(state.workoutsSince, connection)
+        XCTAssertNil(state.workoutAnchor, "the anchor had passed the workouts done between connection and update")
+    }
+
+    func testWorkoutsFromALaterDateKeepTheAnchor() {
+        let state = makeState()
+        let connection = Date(timeIntervalSince1970: 1_794_000_000)
+        state.workoutsSince = connection
+        state.workoutAnchor = HKQueryAnchor(fromValue: 42)
+
+        state.readWorkouts(startingFrom: connection.addingTimeInterval(3_600))
+        XCTAssertNotNil(state.workoutAnchor)
+
+        state.readWorkouts(startingFrom: connection.addingTimeInterval(3_600))
+        XCTAssertNotNil(state.workoutAnchor, "the same date again changes nothing")
     }
 }

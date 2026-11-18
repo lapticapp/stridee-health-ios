@@ -271,6 +271,15 @@ public final class HealthSync: ObservableObject {
         state.ignoreWellness(writtenBy: bundleIdentifiers)
     }
 
+    /// Read workouts from this date on, for an integration that takes no
+    /// workout history (``Configuration/sendsWorkoutHistory`` off) and knows
+    /// when its user connected: without it, they are read from the moment
+    /// this device first read workouts. Kept between launches; a disconnect
+    /// forgets it. An earlier date than before reads the workouts in between.
+    public func readWorkouts(startingFrom date: Date) {
+        state.readWorkouts(startingFrom: date)
+    }
+
     // MARK: - Syncing
 
     /// Read what is new from HealthKit and upload everything queued.
