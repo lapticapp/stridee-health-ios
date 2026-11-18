@@ -85,11 +85,19 @@ struct SyncState {
         }
     }
 
-    /// Workouts that start before this are not read: the moment this device
-    /// first read workouts, for an integration that takes no workout history.
+    /// Workouts that start before this are not read, for an integration that
+    /// takes no workout history: the date it gave, or the moment this device
+    /// first read workouts.
     var workoutsSince: Date? {
         get { date("workoutsSince") }
         nonmutating set { setDate(newValue, "workoutsSince") }
+    }
+
+    /// The workouts since ``workoutsSince`` have been read back to here, by
+    /// date, newest month first. The anchor covers what is added after.
+    var workoutHistoryReachedBack: Date? {
+        get { date("workoutHistoryReachedBack") }
+        nonmutating set { setDate(newValue, "workoutHistoryReachedBack") }
     }
 
     /// The workout `HKQueryAnchor`, archived. Advanced batch by batch, each time
@@ -154,15 +162,16 @@ struct SyncState {
         nonmutating set { defaults.set(newValue, forKey: key("declaredScheduling")) }
     }
 
-    /// See ``HealthSync/readWorkouts(startingFrom:)``. An earlier start drops
-    /// the anchor: HealthKit's anchor never hands back a workout it already
-    /// passed, so the workouts between the two dates are read again from the
-    /// start of the store, the predicate keeping it to them.
-    func readWorkouts(startingFrom date: Date) {
-        guard workoutsSince != date else { return }
-        let narrowing = workoutsSince.map { date > $0 } ?? false
+    /// See ``HealthSync/readWorkouts(startingFrom:)``. An earlier start than
+    /// before carries the read by date back from where it stood, or from now
+    /// when nothing was read by date yet: what HealthKit already held is past
+    /// the anchor, and only a read by date hands it back.
+    func readWorkouts(startingFrom date: Date, now: Date = Date()) {
+        let before = workoutsSince
+        guard before != date else { return }
         workoutsSince = date
-        if !narrowing { workoutAnchor = nil }
+        guard before.map({ date < $0 }) ?? true else { return }
+        if workoutHistoryReachedBack == nil { workoutHistoryReachedBack = before ?? now }
     }
 
     /// See ``HealthSync/ignoreWellness(writtenBy:)``. An app taken off the
@@ -185,7 +194,7 @@ struct SyncState {
     /// there with nothing that knows they are ours. Whoever removes them
     /// clears it.
     func reset() {
-        for name in ["connected", "lastSyncDate", "wellnessCollectedThrough", "wellnessHistoryStart", "wellnessHistoryReachedBack", "workoutAnchor", "workoutsSince", "lastDataFound", "declaredScheduling"] {
+        for name in ["connected", "lastSyncDate", "wellnessCollectedThrough", "wellnessHistoryStart", "wellnessHistoryReachedBack", "workoutAnchor", "workoutsSince", "workoutHistoryReachedBack", "lastDataFound", "declaredScheduling"] {
             defaults.removeObject(forKey: key(name))
         }
     }

@@ -35,6 +35,7 @@ final class SyncStateTests: XCTestCase {
         state.wellnessHistoryStart = Date()
         state.wellnessHistoryReachedBack = Date()
         state.workoutsSince = Date()
+        state.workoutHistoryReachedBack = Date()
         state.lastDataFound = [.wellness: Date()]
 
         state.reset()
@@ -45,6 +46,7 @@ final class SyncStateTests: XCTestCase {
         XCTAssertNil(state.wellnessHistoryStart)
         XCTAssertNil(state.wellnessHistoryReachedBack)
         XCTAssertNil(state.workoutsSince, "a reconnect reads workouts from its own moment, not the first one's")
+        XCTAssertNil(state.workoutHistoryReachedBack)
         XCTAssertTrue(state.lastDataFound.isEmpty)
     }
 
@@ -81,29 +83,43 @@ final class SyncStateTests: XCTestCase {
         XCTAssertEqual(state.ignoredWellnessSources, ["com.whoop.iphone"])
     }
 
-    func testWorkoutsFromAnEarlierDateAreReadAgainFromThere() {
+    func testAYearOfWorkoutsIsReadBackFromNowOnADeviceThatReadNoneByDate() {
+        let state = makeState()
+        let now = Date(timeIntervalSince1970: 1_795_000_000)
+        let aYearBefore = now.addingTimeInterval(-365 * 86_400)
+        state.workoutAnchor = HKQueryAnchor(fromValue: 42)
+
+        state.readWorkouts(startingFrom: aYearBefore, now: now)
+
+        XCTAssertEqual(state.workoutsSince, aYearBefore)
+        XCTAssertEqual(state.workoutHistoryReachedBack, now, "what HealthKit held is past the anchor")
+        XCTAssertNotNil(state.workoutAnchor, "new workouts still come from the anchor")
+    }
+
+    func testAnEarlierDateCarriesTheReadBackFromWhereItStood() {
         let state = makeState()
         let update = Date(timeIntervalSince1970: 1_795_000_000)
         let connection = Date(timeIntervalSince1970: 1_794_000_000)
         state.workoutsSince = update
-        state.workoutAnchor = HKQueryAnchor(fromValue: 42)
 
-        state.readWorkouts(startingFrom: connection)
+        state.readWorkouts(startingFrom: connection, now: update.addingTimeInterval(86_400))
+        XCTAssertEqual(state.workoutHistoryReachedBack, update, "the days since the update were read already")
 
-        XCTAssertEqual(state.workoutsSince, connection)
-        XCTAssertNil(state.workoutAnchor, "the anchor had passed the workouts done between connection and update")
+        let halfway = Date(timeIntervalSince1970: 1_794_500_000)
+        state.workoutHistoryReachedBack = halfway
+        state.readWorkouts(startingFrom: connection.addingTimeInterval(-86_400))
+        XCTAssertEqual(state.workoutHistoryReachedBack, halfway, "a read under way goes on from where it stands")
     }
 
-    func testWorkoutsFromALaterDateKeepTheAnchor() {
+    func testALaterOrTheSameDateReadsNothingMoreBack() {
         let state = makeState()
         let connection = Date(timeIntervalSince1970: 1_794_000_000)
         state.workoutsSince = connection
-        state.workoutAnchor = HKQueryAnchor(fromValue: 42)
 
+        state.readWorkouts(startingFrom: connection)
         state.readWorkouts(startingFrom: connection.addingTimeInterval(3_600))
-        XCTAssertNotNil(state.workoutAnchor)
 
-        state.readWorkouts(startingFrom: connection.addingTimeInterval(3_600))
-        XCTAssertNotNil(state.workoutAnchor, "the same date again changes nothing")
+        XCTAssertEqual(state.workoutsSince, connection.addingTimeInterval(3_600))
+        XCTAssertNil(state.workoutHistoryReachedBack)
     }
 }

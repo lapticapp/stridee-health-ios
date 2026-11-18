@@ -275,7 +275,8 @@ public final class HealthSync: ObservableObject {
     /// workout history (``Configuration/sendsWorkoutHistory`` off) and knows
     /// when its user connected: without it, they are read from the moment
     /// this device first read workouts. Kept between launches; a disconnect
-    /// forgets it. An earlier date than before reads the workouts in between.
+    /// forgets it. An earlier date than before reads the workouts in between,
+    /// newest first.
     public func readWorkouts(startingFrom date: Date) {
         state.readWorkouts(startingFrom: date)
     }
@@ -372,14 +373,22 @@ public final class HealthSync: ObservableObject {
     /// Safe to advance before uploading: the queue is on disk. Uploading as it
     /// goes keeps a year of workouts, routes and all, from piling up on disk
     /// at once.
+    ///
+    /// Without workout history (``Configuration/sendsWorkoutHistory`` off), a
+    /// first read starts the anchor at the present, so it only ever hands back
+    /// new workouts, and the workouts since ``SyncState/workoutsSince`` are read
+    /// by date instead, newest month first, newest workout first.
     private func collectWorkouts(
         _ configuration: Configuration, uploadingWith api: APIClient
     ) async -> HealthSyncError? {
         let exporter = WorkoutExporter(store: store)
         var found = false
         defer { if found { recordDataFound(.workouts) } }
-        if !configuration.sendsWorkoutHistory, state.workoutAnchor == nil, state.workoutsSince == nil {
-            state.workoutsSince = Date()
+        if !configuration.sendsWorkoutHistory, state.workoutAnchor == nil {
+            let now = Date()
+            if state.workoutsSince == nil { state.workoutsSince = now }
+            if state.workoutHistoryReachedBack == nil { state.workoutHistoryReachedBack = now }
+            if let present = await presentWorkoutAnchor(from: now) { state.workoutAnchor = present }
         }
         let since = configuration.sendsWorkoutHistory ? nil : state.workoutsSince
 
@@ -387,28 +396,82 @@ public final class HealthSync: ObservableObject {
             let (workouts, anchor) = await fetchWorkouts(
                 after: state.workoutAnchor, startingFrom: since, limit: Self.workoutBatchSize
             )
-            for workout in workouts {
-                let source = workout.sourceRevision.source.bundleIdentifier
-                if configuration.excludedSourceBundleIDs.contains(source) { continue }
-                if configuration.excludedWorkoutActivityTypes.contains(workout.workoutActivityType) { continue }
-                // Off the main actor: a long ride's route is a lot of JSON.
-                let exported = await Task.detached { await exporter.export(workout) }.value
-                guard let exported else {
-                    log.error("could not serialise workout \(workout.uuid, privacy: .public)")
-                    continue
-                }
-                // Disconnected while this was exporting: write nothing, or a later
-                // connect would resume from an anchor that skips the history.
-                guard state.isConnected else { return nil }
-                await queue.enqueue(exported.rawData, kind: .workout, key: exported.externalId)
-            }
-            guard state.isConnected else { return nil }
+            guard await queueWorkouts(workouts, configuration, exporter) else { return nil }
             if let anchor { state.workoutAnchor = anchor }
             if !workouts.isEmpty { found = true }
             if let error = await drain(api) { return error }
             if workouts.count < Self.workoutBatchSize { break }
         }
+
+        guard let since, let reachedBack = state.workoutHistoryReachedBack else { return nil }
+        let history = SyncWindows.cutBack(
+            from: reachedBack, to: since, days: Self.workoutHistoryWindowDays, calendar: .current
+        )
+        for window in history {
+            if Task.isCancelled { return nil }
+            let workouts = await workoutsStarting(in: window)
+            for batch in workouts.chunked(by: Self.workoutBatchSize) {
+                guard await queueWorkouts(batch, configuration, exporter) else { return nil }
+                if let error = await drain(api) { return error }
+            }
+            if !workouts.isEmpty { found = true }
+            state.workoutHistoryReachedBack = window.start
+        }
         return nil
+    }
+
+    /// Days of workout history read by date at a time, newest first.
+    private static let workoutHistoryWindowDays = 30
+
+    /// Export and queue workouts, skipping what the configuration leaves out.
+    /// `false` when disconnected meanwhile: write nothing more, or a later
+    /// connect would resume from an anchor that skips the history.
+    private func queueWorkouts(
+        _ workouts: [HKWorkout], _ configuration: Configuration, _ exporter: WorkoutExporter
+    ) async -> Bool {
+        for workout in workouts {
+            let source = workout.sourceRevision.source.bundleIdentifier
+            if configuration.excludedSourceBundleIDs.contains(source) { continue }
+            if configuration.excludedWorkoutActivityTypes.contains(workout.workoutActivityType) { continue }
+            // Off the main actor: a long ride's route is a lot of JSON.
+            let exported = await Task.detached { await exporter.export(workout) }.value
+            guard let exported else {
+                log.error("could not serialise workout \(workout.uuid, privacy: .public)")
+                continue
+            }
+            guard state.isConnected else { return false }
+            await queue.enqueue(exported.rawData, kind: .workout, key: exported.externalId)
+        }
+        return state.isConnected
+    }
+
+    /// An anchor past every workout HealthKit holds now: a query for workouts
+    /// that start from now on finds none and hands back where the store stands.
+    private func presentWorkoutAnchor(from now: Date) async -> HKQueryAnchor? {
+        let predicate = HKQuery.predicateForSamples(withStart: now, end: nil, options: .strictStartDate)
+        return await withCheckedContinuation { continuation in
+            let query = HKAnchoredObjectQuery(
+                type: HKObjectType.workoutType(), predicate: predicate, anchor: nil, limit: HKObjectQueryNoLimit
+            ) { _, _, _, newAnchor, _ in
+                continuation.resume(returning: newAnchor)
+            }
+            store.execute(query)
+        }
+    }
+
+    /// The workouts that start in `window`, newest first.
+    private func workoutsStarting(in window: SyncWindows.Window) async -> [HKWorkout] {
+        let predicate = HKQuery.predicateForSamples(withStart: window.start, end: window.end, options: .strictStartDate)
+        let newestFirst = NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: false)
+        return await withCheckedContinuation { continuation in
+            let query = HKSampleQuery(
+                sampleType: HKObjectType.workoutType(), predicate: predicate,
+                limit: HKObjectQueryNoLimit, sortDescriptors: [newestFirst]
+            ) { _, samples, _ in
+                continuation.resume(returning: samples as? [HKWorkout] ?? [])
+            }
+            store.execute(query)
+        }
     }
 
     private func fetchWorkouts(
@@ -419,7 +482,7 @@ public final class HealthSync: ObservableObject {
             let query = HKAnchoredObjectQuery(
                 type: HKObjectType.workoutType(), predicate: predicate, anchor: anchor, limit: limit
             ) { _, samples, _, newAnchor, _ in
-                let workouts = (samples as? [HKWorkout] ?? []).sorted { $0.startDate < $1.startDate }
+                let workouts = (samples as? [HKWorkout] ?? []).sorted { $0.startDate > $1.startDate }
                 continuation.resume(returning: (workouts, newAnchor))
             }
             store.execute(query)
