@@ -328,15 +328,20 @@ public final class HealthSync: ObservableObject {
     }
 
     private func collectAndSend(_ configuration: Configuration, _ api: APIClient) async -> HealthSyncError? {
-        if configuration.dataTypes.contains(.workouts) {
-            await collectWorkouts(configuration)
-        }
-        // What is already queued goes first: this sync's workouts, and whatever
-        // a sync the app did not live to finish left behind. Wellness is then
-        // read and sent a window at a time, on top of what was already sent.
+        // What a sync the app did not live to finish left behind goes first.
+        // Then the last days of wellness, so a year of workouts read for the
+        // first time never holds back last night; then the workouts, a batch
+        // at a time; then the wellness history, newest month first.
         var error = await drain(api)
-        if error == nil, configuration.dataTypes.contains(.wellness) {
-            error = await collectWellness(configuration, uploadingWith: api)
+        let wellness = configuration.dataTypes.contains(.wellness)
+        if error == nil, wellness {
+            error = await collectRecentWellness(configuration, uploadingWith: api)
+        }
+        if error == nil, configuration.dataTypes.contains(.workouts) {
+            error = await collectWorkouts(configuration, uploadingWith: api)
+        }
+        if error == nil, wellness {
+            error = await collectWellnessHistory(uploadingWith: api)
         }
         // Disconnected mid-sync: `disconnect` already reset the status.
         guard state.isConnected else { return error }
@@ -363,11 +368,16 @@ public final class HealthSync: ObservableObject {
     private static let workoutBatchSize = 50
 
     /// Queue every workout added since the anchor, a batch at a time, advancing
-    /// the anchor after each. Safe to advance before uploading: the queue is on
-    /// disk.
-    private func collectWorkouts(_ configuration: Configuration) async {
+    /// the anchor after each and uploading the batch before reading the next.
+    /// Safe to advance before uploading: the queue is on disk. Uploading as it
+    /// goes keeps a year of workouts, routes and all, from piling up on disk
+    /// at once.
+    private func collectWorkouts(
+        _ configuration: Configuration, uploadingWith api: APIClient
+    ) async -> HealthSyncError? {
         let exporter = WorkoutExporter(store: store)
         var found = false
+        defer { if found { recordDataFound(.workouts) } }
         if !configuration.sendsWorkoutHistory, state.workoutAnchor == nil, state.workoutsSince == nil {
             state.workoutsSince = Date()
         }
@@ -389,15 +399,16 @@ public final class HealthSync: ObservableObject {
                 }
                 // Disconnected while this was exporting: write nothing, or a later
                 // connect would resume from an anchor that skips the history.
-                guard state.isConnected else { return }
+                guard state.isConnected else { return nil }
                 await queue.enqueue(exported.rawData, kind: .workout, key: exported.externalId)
             }
-            guard state.isConnected else { return }
+            guard state.isConnected else { return nil }
             if let anchor { state.workoutAnchor = anchor }
             if !workouts.isEmpty { found = true }
+            if let error = await drain(api) { return error }
             if workouts.count < Self.workoutBatchSize { break }
         }
-        if found { recordDataFound(.workouts) }
+        return nil
     }
 
     private func fetchWorkouts(
@@ -424,17 +435,15 @@ public final class HealthSync: ObservableObject {
     private static let wellnessWindowDays = 30
 
     /// Collect wellness from a little before where the last collection ended,
-    /// so the late-arriving tail of yesterday is re-sent, and upload it; then
-    /// carry the first sync's history back, newest month first.
+    /// so the late-arriving tail of yesterday is re-sent, and upload it. On a
+    /// first sync that is the last month, and the history behind it is set up
+    /// for ``collectWellnessHistory(uploadingWith:)``.
     ///
-    /// The history goes a window at a time: each window is read and serialised
-    /// off the main actor, queued, recorded as collected, and uploaded. The
-    /// last month comes first, so what an athlete just did is there within
-    /// seconds and the year behind it follows. An app killed on the way resumes
-    /// from the last window it recorded, and a window that could not be
-    /// uploaded is kept on disk for the next sync, which drains it before
-    /// reading more.
-    private func collectWellness(
+    /// Each window is read and serialised off the main actor, queued, recorded
+    /// as collected, and uploaded. An app killed on the way resumes from the
+    /// last window it recorded, and a window that could not be uploaded is
+    /// kept on disk for the next sync, which drains it before reading more.
+    private func collectRecentWellness(
         _ configuration: Configuration, uploadingWith api: APIClient
     ) async -> HealthSyncError? {
         let now = Date()
@@ -457,9 +466,16 @@ public final class HealthSync: ObservableObject {
             state.wellnessCollectedThrough = window.end
             if let error = await drain(api) { return error }
         }
+        return nil
+    }
 
+    /// Carry the first sync's wellness history back from the last month, a
+    /// window at a time, newest first, the same way.
+    private func collectWellnessHistory(uploadingWith api: APIClient) async -> HealthSyncError? {
         guard let reachedBack = state.wellnessHistoryReachedBack,
               let historyStart = state.wellnessHistoryStart else { return nil }
+        let calendar = Calendar.current
+        let collector = WellnessCollector(store: store, ignoredSources: state.ignoredWellnessSources)
         let history = SyncWindows.cutBack(
             from: reachedBack, to: historyStart, days: Self.wellnessWindowDays, calendar: calendar
         )
