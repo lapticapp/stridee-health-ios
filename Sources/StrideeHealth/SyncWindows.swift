@@ -33,6 +33,23 @@ enum SyncWindows {
         }
         return windows
     }
+
+    /// `[start, end]` cut into windows of at most `days` whole days, newest
+    /// first: a history read back from today. The first window ends at `end`
+    /// itself, and every other edge is a local midnight.
+    static func cutBack(from end: Date, to start: Date, days: Int, calendar: Calendar) -> [Window] {
+        let days = max(1, days)
+        var windows: [Window] = []
+        var to = end
+        while start < to {
+            guard let monthBefore = calendar.date(byAdding: .day, value: -days, to: calendar.startOfDay(for: to)),
+                  monthBefore < to else { break }
+            let from = max(start, monthBefore)
+            windows.append(Window(start: from, end: to))
+            to = from
+        }
+        return windows
+    }
 }
 
 extension Array {

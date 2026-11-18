@@ -393,55 +393,82 @@ public final class HealthSync: ObservableObject {
     private static let wellnessWindowDays = 30
 
     /// Collect wellness from a little before where the last collection ended,
-    /// so the late-arriving tail of yesterday is re-sent, and upload it.
+    /// so the late-arriving tail of yesterday is re-sent, and upload it; then
+    /// carry the first sync's history back, newest month first.
     ///
-    /// A long range — the first sync's history — goes a window at a time: each
-    /// window is read and serialised off the main actor, queued, uploaded, and
-    /// only then recorded as collected. An app killed on the way resumes from
-    /// the last window it recorded, and a window that could not be uploaded is
-    /// kept on disk for the next sync, which drains it before reading more.
+    /// The history goes a window at a time: each window is read and serialised
+    /// off the main actor, queued, recorded as collected, and uploaded. The
+    /// last month comes first, so what an athlete just did is there within
+    /// seconds and the year behind it follows. An app killed on the way resumes
+    /// from the last window it recorded, and a window that could not be
+    /// uploaded is kept on disk for the next sync, which drains it before
+    /// reading more.
     private func collectWellness(
         _ configuration: Configuration, uploadingWith api: APIClient
     ) async -> HealthSyncError? {
         let now = Date()
         let calendar = Calendar.current
-        let start: Date
+        let collector = WellnessCollector(store: store)
+        let recentStart: Date
         if let through = state.wellnessCollectedThrough {
-            start = calendar.date(byAdding: .day, value: -2, to: calendar.startOfDay(for: through)) ?? through
+            recentStart = calendar.date(byAdding: .day, value: -2, to: calendar.startOfDay(for: through)) ?? through
         } else {
-            start = calendar.date(byAdding: .day, value: -configuration.wellnessHistoryDays, to: now) ?? now
+            let today = calendar.startOfDay(for: now)
+            let historyStart = calendar.date(byAdding: .day, value: -configuration.wellnessHistoryDays, to: today) ?? today
+            let lastMonth = calendar.date(byAdding: .day, value: -Self.wellnessWindowDays, to: today) ?? today
+            recentStart = max(historyStart, lastMonth)
+            state.wellnessHistoryStart = historyStart
+            state.wellnessHistoryReachedBack = recentStart
         }
 
-        let collector = WellnessCollector(store: store)
-        let batchSize = Self.wellnessBatchSize
-        for window in SyncWindows.cut(from: start, to: now, days: Self.wellnessWindowDays, calendar: calendar) {
-            if Task.isCancelled { return nil }
-            let (found, bodies): (Bool, [Data]?) = await Task.detached {
-                let items = await collector.collect(from: window.start, to: window.end)
-                var bodies: [Data] = []
-                for batch in items.chunked(by: batchSize) {
-                    let envelope: [String: Any] = ["format": "healthkit.wellness.v1", "items": batch]
-                    guard let body = try? JSONSerialization.data(withJSONObject: envelope) else {
-                        return (!items.isEmpty, nil)
-                    }
-                    bodies.append(body)
-                }
-                return (!items.isEmpty, bodies)
-            }.value
-            // Disconnected while collecting: see `collectWorkouts`.
-            guard state.isConnected else { return nil }
-            guard let bodies else {
-                log.error("could not serialise a wellness batch")
-                return nil
-            }
-            if found { recordDataFound(.wellness) }
-            for body in bodies {
-                await queue.enqueue(body, kind: .wellness, key: UUID().uuidString)
-            }
+        for window in SyncWindows.cut(from: recentStart, to: now, days: Self.wellnessWindowDays, calendar: calendar) {
+            guard await queueWellness(of: window, with: collector) else { return nil }
             state.wellnessCollectedThrough = window.end
             if let error = await drain(api) { return error }
         }
+
+        guard let reachedBack = state.wellnessHistoryReachedBack,
+              let historyStart = state.wellnessHistoryStart else { return nil }
+        let history = SyncWindows.cutBack(
+            from: reachedBack, to: historyStart, days: Self.wellnessWindowDays, calendar: calendar
+        )
+        for window in history {
+            guard await queueWellness(of: window, with: collector) else { return nil }
+            state.wellnessHistoryReachedBack = window.start
+            if let error = await drain(api) { return error }
+        }
         return nil
+    }
+
+    /// Read one window of wellness and queue it. `false` when the sync should
+    /// stop here without an error: cancelled, disconnected meanwhile, or a
+    /// batch that would not serialise.
+    private func queueWellness(of window: SyncWindows.Window, with collector: WellnessCollector) async -> Bool {
+        if Task.isCancelled { return false }
+        let batchSize = Self.wellnessBatchSize
+        let (found, bodies): (Bool, [Data]?) = await Task.detached {
+            let items = await collector.collect(from: window.start, to: window.end)
+            var bodies: [Data] = []
+            for batch in items.chunked(by: batchSize) {
+                let envelope: [String: Any] = ["format": "healthkit.wellness.v1", "items": batch]
+                guard let body = try? JSONSerialization.data(withJSONObject: envelope) else {
+                    return (!items.isEmpty, nil)
+                }
+                bodies.append(body)
+            }
+            return (!items.isEmpty, bodies)
+        }.value
+        // Disconnected while collecting: see `collectWorkouts`.
+        guard state.isConnected else { return false }
+        guard let bodies else {
+            log.error("could not serialise a wellness batch")
+            return false
+        }
+        if found { recordDataFound(.wellness) }
+        for body in bodies {
+            await queue.enqueue(body, kind: .wellness, key: UUID().uuidString)
+        }
+        return true
     }
 
     private func recordDataFound(_ type: DataType) {

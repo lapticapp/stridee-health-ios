@@ -31,6 +31,8 @@ final class SyncStateTests: XCTestCase {
         state.isConnected = true
         state.lastSyncDate = Date()
         state.wellnessCollectedThrough = Date()
+        state.wellnessHistoryStart = Date()
+        state.wellnessHistoryReachedBack = Date()
         state.lastDataFound = [.wellness: Date()]
 
         state.reset()
@@ -38,6 +40,8 @@ final class SyncStateTests: XCTestCase {
         XCTAssertFalse(state.isConnected)
         XCTAssertNil(state.lastSyncDate)
         XCTAssertNil(state.wellnessCollectedThrough)
+        XCTAssertNil(state.wellnessHistoryStart)
+        XCTAssertNil(state.wellnessHistoryReachedBack)
         XCTAssertTrue(state.lastDataFound.isEmpty)
     }
 }

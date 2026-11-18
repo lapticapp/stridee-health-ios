@@ -60,6 +60,31 @@ final class SyncWindowsTests: XCTestCase {
         XCTAssertEqual(SyncWindows.cut(from: moment, to: moment.addingTimeInterval(-60), days: 30, calendar: paris), [])
     }
 
+    func testAYearReadBackFromTodayGoesNewestMonthFirstAndStopsAtItsStart() {
+        let calendar = paris
+        let today = date("2026-11-18T00:00:00+01:00")
+        let start = calendar.date(byAdding: .day, value: -365, to: today)!
+        let lastMonth = calendar.date(byAdding: .day, value: -30, to: today)!
+
+        let windows = SyncWindows.cutBack(from: lastMonth, to: start, days: 30, calendar: calendar)
+
+        XCTAssertEqual(windows.first?.end, lastMonth, "the history picks up where the last month stopped")
+        XCTAssertEqual(windows.last?.start, start)
+        for (later, earlier) in zip(windows, windows.dropFirst()) {
+            XCTAssertEqual(earlier.end, later.start)
+            XCTAssertLessThan(earlier.start, later.start)
+            XCTAssertEqual(calendar.startOfDay(for: later.start), later.start, "an edge is a local midnight")
+        }
+        let days = calendar.dateComponents([.day], from: windows[0].start, to: windows[0].end).day
+        XCTAssertEqual(days, 30, "the newest window is a whole month, the short one is the oldest")
+    }
+
+    func testAHistoryAlreadyReadBackToItsStartHasNoWindowLeft() {
+        let moment = date("2026-11-16T00:00:00+01:00")
+        XCTAssertEqual(SyncWindows.cutBack(from: moment, to: moment, days: 30, calendar: paris), [])
+        XCTAssertEqual(SyncWindows.cutBack(from: moment, to: moment.addingTimeInterval(60), days: 30, calendar: paris), [])
+    }
+
     func testChunkedKeepsOrderAndFillsAllButTheLast() {
         XCTAssertEqual([1, 2, 3, 4, 5].chunked(by: 2), [[1, 2], [3, 4], [5]])
         XCTAssertEqual([1, 2].chunked(by: 5), [[1, 2]])

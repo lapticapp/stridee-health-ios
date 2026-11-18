@@ -46,7 +46,9 @@ final class UploadQueueTests: XCTestCase {
         let directory = makeDirectory()
         let before = UploadQueue(directory: directory)
         await before.enqueue(Data("a".utf8), kind: .workout, key: "0D3C-WORKOUT")
+        try? await Task.sleep(nanoseconds: 2_000_000)
         await before.enqueue(Data("b".utf8), kind: .wellness, key: "WELLNESS-1")
+        try? await Task.sleep(nanoseconds: 2_000_000)
         await before.enqueue(Data("c".utf8), kind: .workout, key: "SENT")
         await before.remove(before.items()[2])
 

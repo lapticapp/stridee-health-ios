@@ -40,6 +40,22 @@ struct SyncState {
         nonmutating set { setDate(newValue, "wellnessCollectedThrough") }
     }
 
+    /// How far back the first sync's wellness history goes. Set when it starts.
+    var wellnessHistoryStart: Date? {
+        get { date("wellnessHistoryStart") }
+        nonmutating set { setDate(newValue, "wellnessHistoryStart") }
+    }
+
+    /// The first sync's wellness history has been collected from here to
+    /// ``wellnessCollectedThrough``. Moves back a window at a time, newest
+    /// month first, until it reaches ``wellnessHistoryStart``. Absent on a
+    /// device that read its history oldest first, before this existed: that
+    /// history is whole once ``wellnessCollectedThrough`` reaches today.
+    var wellnessHistoryReachedBack: Date? {
+        get { date("wellnessHistoryReachedBack") }
+        nonmutating set { setDate(newValue, "wellnessHistoryReachedBack") }
+    }
+
     /// When a sync last found new data in HealthKit, per data type. What an
     /// app reads to tell "connected and working" from "connected, but HealthKit
     /// is handing us nothing" — which, since iOS never reports a denied read,
@@ -131,7 +147,7 @@ struct SyncState {
     /// there with nothing that knows they are ours. Whoever removes them
     /// clears it.
     func reset() {
-        for name in ["connected", "lastSyncDate", "wellnessCollectedThrough", "workoutAnchor", "lastDataFound", "declaredScheduling"] {
+        for name in ["connected", "lastSyncDate", "wellnessCollectedThrough", "wellnessHistoryStart", "wellnessHistoryReachedBack", "workoutAnchor", "lastDataFound", "declaredScheduling"] {
             defaults.removeObject(forKey: key(name))
         }
     }
