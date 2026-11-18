@@ -132,7 +132,7 @@ nothing found usually means the switches are off. Show `openSettings()`.
 | | Default | |
 |---|---|---|
 | `tokenProvider` | required | Returns a fresh `DeviceToken` from your server |
-| `dataTypes` | `[.workouts, .wellness]` | What to read and send |
+| `dataTypes` | `[.workouts, .wellness]` | What to read and send; an upload of a type taken out is dropped from the queue unsent |
 | `excludedSourceBundleIDs` | Garmin Connect, Wahoo | Workouts those apps mirror into HealthKit are skipped, since they reach Stridee natively with richer files |
 | `wellnessHistoryDays` | `90` | Wellness history sent on the first sync |
 | `baseURL` | `https://api.stridee.com` | |
@@ -148,6 +148,9 @@ nothing found usually means the switches are off. Show `openSettings()`.
   month at a time; each piece is queued, sent and recorded before the next is read. An
   app killed on the way resumes from the last piece, and a year of samples is never in
   memory at once.
+- **The main thread never touches the queue.** It is an actor that lists its directory
+  once per launch and keeps its own index, so a thousand queued uploads cost the app's
+  interface nothing.
 - **Workouts are sent once.** Each is keyed by its HealthKit UUID, on the phone and on
   the server.
 - **Wellness is re-sent on purpose.** Every sync re-collects the last couple of days,

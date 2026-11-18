@@ -97,6 +97,16 @@ extension HealthSync {
             self.schedulesWorkouts = schedulesWorkouts
         }
 
+        /// Whether an upload of this kind still goes out. One queued while its
+        /// data type was synced, and left behind when the app stopped syncing
+        /// it, is dropped unsent: the integration said it does not want it.
+        func sends(_ kind: UploadQueue.Kind) -> Bool {
+            switch kind {
+            case .workout: return dataTypes.contains(.workouts)
+            case .wellness: return dataTypes.contains(.wellness)
+            }
+        }
+
         public static let defaultExcludedSourceBundleIDs: Set<String> = [
             "com.garmin.connect.mobile",
             "com.wahoofitness.fitness",

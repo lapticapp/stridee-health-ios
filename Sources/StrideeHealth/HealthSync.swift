@@ -71,8 +71,8 @@ public final class HealthSync: ObservableObject {
 
         status.isConnected = state.isConnected
         status.lastSyncDate = state.lastSyncDate
-        status.pendingUploads = queue.count
         status.lastDataFound = state.lastDataFound
+        Task { self.status.pendingUploads = await self.queue.count }
         status.workoutScheduling.scheduledCount = state.managedPlans.count
         Task { _ = await self.authorizationStatus() }
         if configuration.schedulesWorkouts {
@@ -224,7 +224,7 @@ public final class HealthSync: ObservableObject {
         stopObserving()
         currentSync?.cancel()
         scheduleSync?.cancel()
-        queue.removeAll()
+        await queue.removeAll()
         state.reset()
         await removeScheduledWorkouts()
         status = Status()
@@ -243,18 +243,18 @@ public final class HealthSync: ObservableObject {
     private func confirmConnection() async {
         guard let api, state.isConnected else { return }
         if (try? await api.getConnection()) == .notConnected {
-            markDisconnectedRemotely()
+            await markDisconnectedRemotely()
         }
     }
 
-    func markDisconnectedRemotely() {
+    func markDisconnectedRemotely() async {
         log.notice("disconnected on the server; stopping")
         stopObserving()
-        queue.removeAll()
         state.reset()
         status.isConnected = false
         status.pendingUploads = 0
         status.lastError = .disconnectedRemotely
+        await queue.removeAll()
         // Their workouts stop being ours to keep on the watch.
         Task { await self.removeScheduledWorkouts() }
     }
@@ -295,13 +295,18 @@ public final class HealthSync: ObservableObject {
         status.isSyncing = true
         // Finish the upload if the app is backgrounded mid-sync.
         let background = UIApplication.shared.beginBackgroundTask(withName: "StrideeHealth sync")
-        defer {
-            status.isSyncing = false
-            status.progress = nil
-            status.pendingUploads = queue.count
-            UIApplication.shared.endBackgroundTask(background)
-        }
+        let error = await collectAndSend(configuration, api)
+        let pending = await queue.count
+        var finished = status
+        finished.isSyncing = false
+        finished.progress = nil
+        finished.pendingUploads = pending
+        status = finished
+        UIApplication.shared.endBackgroundTask(background)
+        return error
+    }
 
+    private func collectAndSend(_ configuration: Configuration, _ api: APIClient) async -> HealthSyncError? {
         if configuration.dataTypes.contains(.workouts) {
             await collectWorkouts(configuration)
         }
@@ -357,7 +362,7 @@ public final class HealthSync: ObservableObject {
                 // Disconnected while this was exporting: write nothing, or a later
                 // connect would resume from an anchor that skips the history.
                 guard state.isConnected else { return }
-                queue.enqueue(exported.rawData, kind: .workout, key: exported.externalId)
+                await queue.enqueue(exported.rawData, kind: .workout, key: exported.externalId)
             }
             guard state.isConnected else { return }
             if let anchor { state.workoutAnchor = anchor }
@@ -431,7 +436,7 @@ public final class HealthSync: ObservableObject {
             }
             if found { recordDataFound(.wellness) }
             for body in bodies {
-                queue.enqueue(body, kind: .wellness, key: UUID().uuidString)
+                await queue.enqueue(body, kind: .wellness, key: UUID().uuidString)
             }
             state.wellnessCollectedThrough = window.end
             if let error = await drain(api) { return error }
@@ -446,21 +451,33 @@ public final class HealthSync: ObservableObject {
         status.lastDataFound = found
     }
 
+    /// Items uploaded between two updates of ``Status/progress`` and
+    /// ``Status/pendingUploads``. Each update reaches every observer of
+    /// ``status``; one per item, over a queue of a thousand, kept the app busy
+    /// relaying them.
+    private static let progressStride = 10
+
     /// Upload the queue, oldest first, until it is empty or something stops it.
     ///
     /// A payload the API refuses as invalid (400, 413) is dropped — sending it
     /// again cannot succeed, and keeping it would block everything behind it.
-    /// A transport or token failure stops the drain and leaves the rest for the
-    /// next sync.
+    /// An upload of a data type ``Configuration/dataTypes`` no longer names,
+    /// queued before it was taken out, is dropped unsent. A transport or token
+    /// failure stops the drain and leaves the rest for the next sync.
     private func drain(_ api: APIClient) async -> HealthSyncError? {
-        let items = queue.items()
+        let items = await queue.items()
         guard !items.isEmpty else { return nil }
 
         var dropped: HealthSyncError?
         for (index, item) in items.enumerated() {
-            status.progress = .init(done: index, total: items.count)
-            guard let body = queue.body(of: item) else {
-                queue.remove(item)
+            if index % Self.progressStride == 0 {
+                var progressed = status
+                progressed.progress = .init(done: index, total: items.count)
+                progressed.pendingUploads = items.count - index
+                status = progressed
+            }
+            guard configuration?.sends(item.kind) ?? true, let body = await queue.body(of: item) else {
+                await queue.remove(item)
                 continue
             }
             do {
@@ -470,14 +487,14 @@ public final class HealthSync: ObservableObject {
                 case .wellness: outcome = try await api.uploadWellness(body)
                 }
                 if outcome == .notConnected {
-                    markDisconnectedRemotely()
+                    await markDisconnectedRemotely()
                     return .disconnectedRemotely
                 }
-                queue.remove(item)
+                await queue.remove(item)
             } catch let error as HealthSyncError {
                 if case .rejected(let code, _) = error, code == 400 || code == 413 {
                     log.error("API refused a queued \(item.kind.rawValue, privacy: .public); dropping it")
-                    queue.remove(item)
+                    await queue.remove(item)
                     dropped = error
                     continue
                 }
@@ -485,7 +502,6 @@ public final class HealthSync: ObservableObject {
             } catch {
                 return .transport(error.localizedDescription)
             }
-            status.pendingUploads = queue.count
         }
         return dropped
     }

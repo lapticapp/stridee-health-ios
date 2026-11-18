@@ -112,7 +112,7 @@ extension HealthSync {
             status.workoutScheduling.authorization = authorization
             if state.declaredScheduling != authorization.rawValue {
                 if try await api.putWorkoutScheduling(authorization: authorization.rawValue) == .notConnected {
-                    markDisconnectedRemotely()
+                    await markDisconnectedRemotely()
                     return .disconnectedRemotely
                 }
                 state.declaredScheduling = authorization.rawValue
@@ -121,7 +121,7 @@ extension HealthSync {
             let items: [ScheduledItem]
             switch try await api.scheduledWorkouts() {
             case .notConnected:
-                markDisconnectedRemotely()
+                await markDisconnectedRemotely()
                 return .disconnectedRemotely
             case .workouts(let listed):
                 items = listed
