@@ -56,6 +56,14 @@ struct SyncState {
         nonmutating set { setDate(newValue, "wellnessHistoryReachedBack") }
     }
 
+    /// Apps whose wellness is left out, by bundle identifier. Kept across a
+    /// disconnect: it says what the integration receives another way, not
+    /// what this device has sent.
+    var ignoredWellnessSources: Set<String> {
+        get { Set(defaults.stringArray(forKey: key("ignoredWellnessSources")) ?? []) }
+        nonmutating set { defaults.set(newValue.sorted(), forKey: key("ignoredWellnessSources")) }
+    }
+
     /// When a sync last found new data in HealthKit, per data type. What an
     /// app reads to tell "connected and working" from "connected, but HealthKit
     /// is handing us nothing" — which, since iOS never reports a denied read,
@@ -144,6 +152,18 @@ struct SyncState {
     var declaredScheduling: String? {
         get { defaults.string(forKey: key("declaredScheduling")) }
         nonmutating set { defaults.set(newValue, forKey: key("declaredScheduling")) }
+    }
+
+    /// See ``HealthSync/ignoreWellness(writtenBy:)``. An app taken off the
+    /// list makes the next sync read the wellness history again.
+    func ignoreWellness(writtenBy bundleIdentifiers: Set<String>) {
+        let before = ignoredWellnessSources
+        guard bundleIdentifiers != before else { return }
+        ignoredWellnessSources = bundleIdentifiers
+        guard !before.isSubset(of: bundleIdentifiers) else { return }
+        for name in ["wellnessCollectedThrough", "wellnessHistoryStart", "wellnessHistoryReachedBack"] {
+            defaults.removeObject(forKey: key(name))
+        }
     }
 
     /// Forget everything about this device's sync — on disconnect, so the next

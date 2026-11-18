@@ -16,6 +16,8 @@ import HealthKit
 struct WellnessCollector {
     let store: HKHealthStore
     var calendar: Calendar = .current
+    /// Apps whose samples are left out, by bundle identifier.
+    var ignoredSources: Set<String> = []
 
     typealias Item = [String: Any]
 
@@ -123,8 +125,8 @@ struct WellnessCollector {
     }
 
     private func dailyStatistics(_ field: DailyField, from start: Date, to end: Date) async -> [(Date, HKStatistics)] {
-        guard let type = HKQuantityType.quantityType(forIdentifier: field.id) else { return [] }
-        let predicate = HKQuery.predicateForSamples(withStart: start, end: end, options: .strictStartDate)
+        guard let type = HKQuantityType.quantityType(forIdentifier: field.id),
+              let predicate = await predicate(for: type, from: start, to: end) else { return [] }
         return await withCheckedContinuation { continuation in
             let query = HKStatisticsCollectionQuery(
                 quantityType: type,
@@ -375,7 +377,7 @@ struct WellnessCollector {
 
     private func samples(_ type: HKSampleType, from start: Date, to end: Date) async -> [HKSample] {
         let predicate = HKQuery.predicateForSamples(withStart: start, end: end, options: .strictStartDate)
-        return await withCheckedContinuation { continuation in
+        let samples: [HKSample] = await withCheckedContinuation { continuation in
             let query = HKSampleQuery(
                 sampleType: type, predicate: predicate, limit: HKObjectQueryNoLimit, sortDescriptors: nil
             ) { _, samples, _ in
@@ -383,5 +385,26 @@ struct WellnessCollector {
             }
             store.execute(query)
         }
+        guard !ignoredSources.isEmpty else { return samples }
+        return samples.filter { !ignoredSources.contains($0.sourceRevision.source.bundleIdentifier) }
+    }
+
+    /// The samples of `type` in `[start, end]`, from every source but the
+    /// ignored ones; `nil` when only ignored sources wrote any. A statistics
+    /// query merges its sources itself, so it is told which ones to merge:
+    /// HealthKit filters on sources it is handed, not on bundle identifiers.
+    private func predicate(for type: HKSampleType, from start: Date, to end: Date) async -> NSPredicate? {
+        let dates = HKQuery.predicateForSamples(withStart: start, end: end, options: .strictStartDate)
+        guard !ignoredSources.isEmpty else { return dates }
+        let sources: Set<HKSource> = await withCheckedContinuation { continuation in
+            let query = HKSourceQuery(sampleType: type, samplePredicate: dates) { _, sources, _ in
+                continuation.resume(returning: sources ?? [])
+            }
+            store.execute(query)
+        }
+        let kept = sources.filter { !ignoredSources.contains($0.bundleIdentifier) }
+        guard kept.count < sources.count else { return dates }
+        guard !kept.isEmpty else { return nil }
+        return NSCompoundPredicate(andPredicateWithSubpredicates: [dates, HKQuery.predicateForObjects(from: kept)])
     }
 }

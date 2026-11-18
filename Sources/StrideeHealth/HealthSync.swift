@@ -260,6 +260,17 @@ public final class HealthSync: ObservableObject {
         Task { await self.removeScheduledWorkouts() }
     }
 
+    /// Leave out the wellness these apps write to HealthKit, for an
+    /// integration that receives their data another way: a WHOOP or Garmin
+    /// account connected directly, whose nights would otherwise arrive twice.
+    /// Kept between launches.
+    ///
+    /// An app taken off the list leaves days nothing else covered, so the
+    /// wellness history is read again on the next sync, newest month first.
+    public func ignoreWellness(writtenBy bundleIdentifiers: Set<String>) {
+        state.ignoreWellness(writtenBy: bundleIdentifiers)
+    }
+
     // MARK: - Syncing
 
     /// Read what is new from HealthKit and upload everything queued.
@@ -419,7 +430,7 @@ public final class HealthSync: ObservableObject {
     ) async -> HealthSyncError? {
         let now = Date()
         let calendar = Calendar.current
-        let collector = WellnessCollector(store: store)
+        let collector = WellnessCollector(store: store, ignoredSources: state.ignoredWellnessSources)
         let recentStart: Date
         if let through = state.wellnessCollectedThrough {
             recentStart = calendar.date(byAdding: .day, value: -2, to: calendar.startOfDay(for: through)) ?? through

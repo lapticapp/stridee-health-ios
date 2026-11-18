@@ -141,6 +141,10 @@ nothing found usually means the switches are off. Show `openSettings()`.
 | `importWorkoutAnchorFromUserDefaultsKey` | `nil` | Resume from your own pre-SDK `HKQueryAnchor` instead of re-sending every workout |
 | `schedulesWorkouts` | `false` | Schedule the workouts your server pushes on the Apple Watch |
 
+`HealthSync.shared.ignoreWellness(writtenBy:)` leaves out the wellness the named apps write to
+HealthKit, for an integration that receives their data another way. An app taken off the list
+has the wellness history read again on the next sync.
+
 ## How it behaves
 
 - **Nothing is lost.** Uploads are written to disk before they are sent and retried on
