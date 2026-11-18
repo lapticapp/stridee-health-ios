@@ -1,4 +1,5 @@
 import Foundation
+import HealthKit
 
 extension HealthSync {
 
@@ -54,9 +55,20 @@ extension HealthSync {
         /// arrive twice. Set to `[]` if you do not use those integrations.
         public var excludedSourceBundleIDs: Set<String>
 
-        /// How many days of wellness history the first sync sends. Workouts
-        /// always send their full history.
+        /// How many days of wellness history the first sync sends.
         public var wellnessHistoryDays: Int
+
+        /// Whether the first sync sends the workouts already in HealthKit.
+        ///
+        /// `false` sends only workouts that start after this device first
+        /// reads workouts, for an integration that takes no history from
+        /// Apple Health: years of workouts are never read, queued or uploaded
+        /// to be thrown away on arrival.
+        public var sendsWorkoutHistory: Bool
+
+        /// Workouts of these kinds are not sent, for an integration that gets
+        /// them from somewhere else.
+        public var excludedWorkoutActivityTypes: Set<HKWorkoutActivityType>
 
         /// The Stridee API. Change it only to point at a staging deployment.
         public var baseURL: URL
@@ -84,6 +96,8 @@ extension HealthSync {
             dataTypes: Set<DataType> = Set(DataType.allCases),
             excludedSourceBundleIDs: Set<String> = Configuration.defaultExcludedSourceBundleIDs,
             wellnessHistoryDays: Int = 90,
+            sendsWorkoutHistory: Bool = true,
+            excludedWorkoutActivityTypes: Set<HKWorkoutActivityType> = [],
             baseURL: URL = URL(string: "https://api.stridee.com")!,
             importWorkoutAnchorFromUserDefaultsKey: String? = nil,
             schedulesWorkouts: Bool = false
@@ -92,6 +106,8 @@ extension HealthSync {
             self.dataTypes = dataTypes
             self.excludedSourceBundleIDs = excludedSourceBundleIDs
             self.wellnessHistoryDays = max(1, wellnessHistoryDays)
+            self.sendsWorkoutHistory = sendsWorkoutHistory
+            self.excludedWorkoutActivityTypes = excludedWorkoutActivityTypes
             self.baseURL = baseURL
             self.importWorkoutAnchorFromUserDefaultsKey = importWorkoutAnchorFromUserDefaultsKey
             self.schedulesWorkouts = schedulesWorkouts

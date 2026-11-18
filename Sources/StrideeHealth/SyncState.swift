@@ -77,6 +77,13 @@ struct SyncState {
         }
     }
 
+    /// Workouts that start before this are not read: the moment this device
+    /// first read workouts, for an integration that takes no workout history.
+    var workoutsSince: Date? {
+        get { date("workoutsSince") }
+        nonmutating set { setDate(newValue, "workoutsSince") }
+    }
+
     /// The workout `HKQueryAnchor`, archived. Advanced batch by batch, each time
     /// every workout the batch covers is in the upload queue.
     var workoutAnchor: HKQueryAnchor? {
@@ -147,7 +154,7 @@ struct SyncState {
     /// there with nothing that knows they are ours. Whoever removes them
     /// clears it.
     func reset() {
-        for name in ["connected", "lastSyncDate", "wellnessCollectedThrough", "wellnessHistoryStart", "wellnessHistoryReachedBack", "workoutAnchor", "lastDataFound", "declaredScheduling"] {
+        for name in ["connected", "lastSyncDate", "wellnessCollectedThrough", "wellnessHistoryStart", "wellnessHistoryReachedBack", "workoutAnchor", "workoutsSince", "lastDataFound", "declaredScheduling"] {
             defaults.removeObject(forKey: key(name))
         }
     }

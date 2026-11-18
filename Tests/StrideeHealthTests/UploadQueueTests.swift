@@ -110,4 +110,19 @@ final class UploadQueueTests: XCTestCase {
         XCTAssertTrue(both.sends(.workout))
         XCTAssertTrue(both.sends(.wellness))
     }
+
+    func testWorkoutsSendTheirHistoryAndEveryKindUnlessToldOtherwise() {
+        let token: @Sendable () async throws -> HealthSync.DeviceToken = {
+            HealthSync.DeviceToken(token: "t", expiresAt: .distantFuture)
+        }
+        let defaults = HealthSync.Configuration(tokenProvider: token)
+        XCTAssertTrue(defaults.sendsWorkoutHistory)
+        XCTAssertTrue(defaults.excludedWorkoutActivityTypes.isEmpty)
+
+        let laptic = HealthSync.Configuration(
+            tokenProvider: token, sendsWorkoutHistory: false, excludedWorkoutActivityTypes: [.cycling, .walking]
+        )
+        XCTAssertFalse(laptic.sendsWorkoutHistory)
+        XCTAssertEqual(laptic.excludedWorkoutActivityTypes, [.cycling, .walking])
+    }
 }

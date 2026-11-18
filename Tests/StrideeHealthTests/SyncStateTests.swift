@@ -33,6 +33,7 @@ final class SyncStateTests: XCTestCase {
         state.wellnessCollectedThrough = Date()
         state.wellnessHistoryStart = Date()
         state.wellnessHistoryReachedBack = Date()
+        state.workoutsSince = Date()
         state.lastDataFound = [.wellness: Date()]
 
         state.reset()
@@ -42,6 +43,7 @@ final class SyncStateTests: XCTestCase {
         XCTAssertNil(state.wellnessCollectedThrough)
         XCTAssertNil(state.wellnessHistoryStart)
         XCTAssertNil(state.wellnessHistoryReachedBack)
+        XCTAssertNil(state.workoutsSince, "a reconnect reads workouts from its own moment, not the first one's")
         XCTAssertTrue(state.lastDataFound.isEmpty)
     }
 }

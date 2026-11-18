@@ -180,7 +180,8 @@ public final class HealthSync: ObservableObject {
     /// Shows the permission sheet for anything not yet asked about, then tells
     /// the API this user is connected — your webhook gets `account.connected`
     /// the first time — and runs the first sync, which sends workout history
-    /// in full and ``Configuration/wellnessHistoryDays`` of wellness. Returns
+    /// in full unless ``Configuration/sendsWorkoutHistory`` is off, and
+    /// ``Configuration/wellnessHistoryDays`` of wellness. Returns
     /// once connected; the first sync carries on in the background.
     ///
     /// - Parameter requestingAuthorization: `false` connects without showing
@@ -347,12 +348,19 @@ public final class HealthSync: ObservableObject {
     private func collectWorkouts(_ configuration: Configuration) async {
         let exporter = WorkoutExporter(store: store)
         var found = false
+        if !configuration.sendsWorkoutHistory, state.workoutAnchor == nil, state.workoutsSince == nil {
+            state.workoutsSince = Date()
+        }
+        let since = configuration.sendsWorkoutHistory ? nil : state.workoutsSince
 
         while !Task.isCancelled {
-            let (workouts, anchor) = await fetchWorkouts(after: state.workoutAnchor, limit: Self.workoutBatchSize)
+            let (workouts, anchor) = await fetchWorkouts(
+                after: state.workoutAnchor, startingFrom: since, limit: Self.workoutBatchSize
+            )
             for workout in workouts {
                 let source = workout.sourceRevision.source.bundleIdentifier
                 if configuration.excludedSourceBundleIDs.contains(source) { continue }
+                if configuration.excludedWorkoutActivityTypes.contains(workout.workoutActivityType) { continue }
                 // Off the main actor: a long ride's route is a lot of JSON.
                 let exported = await Task.detached { await exporter.export(workout) }.value
                 guard let exported else {
@@ -372,10 +380,13 @@ public final class HealthSync: ObservableObject {
         if found { recordDataFound(.workouts) }
     }
 
-    private func fetchWorkouts(after anchor: HKQueryAnchor?, limit: Int) async -> ([HKWorkout], HKQueryAnchor?) {
-        await withCheckedContinuation { continuation in
+    private func fetchWorkouts(
+        after anchor: HKQueryAnchor?, startingFrom since: Date?, limit: Int
+    ) async -> ([HKWorkout], HKQueryAnchor?) {
+        let predicate = since.map { HKQuery.predicateForSamples(withStart: $0, end: nil, options: .strictStartDate) }
+        return await withCheckedContinuation { continuation in
             let query = HKAnchoredObjectQuery(
-                type: HKObjectType.workoutType(), predicate: nil, anchor: anchor, limit: limit
+                type: HKObjectType.workoutType(), predicate: predicate, anchor: anchor, limit: limit
             ) { _, samples, _, newAnchor, _ in
                 let workouts = (samples as? [HKWorkout] ?? []).sorted { $0.startDate < $1.startDate }
                 continuation.resume(returning: (workouts, newAnchor))

@@ -134,6 +134,8 @@ nothing found usually means the switches are off. Show `openSettings()`.
 | `tokenProvider` | required | Returns a fresh `DeviceToken` from your server |
 | `dataTypes` | `[.workouts, .wellness]` | What to read and send; an upload of a type taken out is dropped from the queue unsent |
 | `excludedSourceBundleIDs` | Garmin Connect, Wahoo | Workouts those apps mirror into HealthKit are skipped, since they reach Stridee natively with richer files |
+| `sendsWorkoutHistory` | `true` | `false`: only workouts that start after this device first reads workouts |
+| `excludedWorkoutActivityTypes` | `[]` | Workout kinds not sent |
 | `wellnessHistoryDays` | `90` | Wellness history sent on the first sync, the last month first, then a month at a time back |
 | `baseURL` | `https://api.stridee.com` | |
 | `importWorkoutAnchorFromUserDefaultsKey` | `nil` | Resume from your own pre-SDK `HKQueryAnchor` instead of re-sending every workout |
